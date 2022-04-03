@@ -1,5 +1,5 @@
-use crate::{error::RpcError, eth::transaction::EthTransactionRequest};
-use ethers_core::types::{Address, BlockNumber, Transaction, TxHash, U256};
+use crate::error::RpcError;
+use ethers_core::types::{Address, BlockNumber, Transaction, TxHash, U256, transaction::eip2718::TypedTransaction};
 use serde::{
     de::DeserializeOwned, ser::SerializeSeq, Deserialize, Deserializer, Serialize, Serializer,
 };
@@ -29,7 +29,7 @@ pub enum EthRequest {
         serialize_with = "ser_into_sequence",
         deserialize_with = "de_from_sequence"
     )]
-    EthSendTransaction(Box<EthTransactionRequest>),
+    EthSendTransaction(Box<TypedTransaction>),
 }
 
 fn ser_into_sequence<S, T>(val: &T, s: S) -> Result<S::Ok, S::Error>

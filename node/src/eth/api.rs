@@ -10,16 +10,15 @@ use crate::eth::{
 use ethers::{
     abi::ethereum_types::H64,
     types::{
-        Address, Block, BlockNumber, Bytes, FeeHistory, Filter, Log, Transaction,
-        TransactionReceipt, TxHash, H256, U256, U64,
+        Address, Block, BlockNumber, Bytes, FeeHistory, Filter, Log,
+        Transaction as TransactionResponse, TransactionReceipt, TxHash, H256, U256, U64,
+        transaction::eip2718::TypedTransaction
     },
-    utils::rlp,
+    utils::rlp::{self, Decodable},
 };
 use forge_node_core::{
     eth::{
-        transaction::{
-            EthTransactionRequest, PendingTransaction, TypedTransaction, TypedTransactionRequest,
-        },
+        transaction::{PendingTransaction, TypedTransaction as SignedTypedTransaction, SignedTransaction},
         EthRequest,
     },
     response::RpcResponse,
@@ -54,7 +53,7 @@ impl EthApi {
             EthRequest::EthGetBalance(_, _) => {}
             EthRequest::EthGetTransactionByHash(_) => {}
             EthRequest::EthSendTransaction(request) => {
-                self.send_transaction(*request).await;
+                self.send_transaction(&request).await;
             }
         }
 
@@ -64,11 +63,11 @@ impl EthApi {
     fn sign_request(
         &self,
         from: &Address,
-        request: TypedTransactionRequest,
-    ) -> Result<TypedTransaction> {
+        request: &TypedTransaction,
+    ) -> Result<SignedTransaction> {
         for signer in self.signers.iter() {
             if signer.accounts().contains(from) {
-                return signer.sign(request, from)
+                return signer.sign(request.clone(), from)
             }
         }
         Err(BlockchainError::NoSignerAvailable)
@@ -219,50 +218,17 @@ impl EthApi {
     /// Sends a transaction
     ///
     /// Handler for ETH RPC call: `eth_sendTransaction`
-    pub async fn send_transaction(&self, request: EthTransactionRequest) -> Result<TxHash> {
-        let from = request.from.map(Ok).unwrap_or_else(|| {
-            self.accounts()?.get(0).cloned().ok_or(BlockchainError::NoSignerAvailable)
-        })?;
+    pub async fn send_transaction(&self, request: &TypedTransaction) -> Result<TxHash> {
+        let from = request.from().map_or_else(|| {
+            self
+                .accounts()?
+                .get(0)
+                .cloned()
+                .ok_or(BlockchainError::NoSignerAvailable)
+        }, |addr| Ok(*addr))?;
 
         let on_chain_nonce = self.transaction_count(from, None)?;
-        let nonce = request.nonce.unwrap_or(on_chain_nonce);
-
-        let chain_id = self.chain_id()?.ok_or(BlockchainError::ChainIdNotAvailable)?.as_u64();
-
-        let max_fee_per_gas = request.max_fee_per_gas;
-        let gas_price = request.gas_price;
-        let gas_limit = request.gas.map(Ok).unwrap_or_else(|| self.current_gas_limit())?;
-
-        let request = match request.into_typed_request() {
-            Some(TypedTransactionRequest::Legacy(mut m)) => {
-                m.nonce = nonce;
-                m.chain_id = Some(chain_id);
-                m.gas_limit = gas_limit;
-                if gas_price.is_none() {
-                    m.gas_price = self.gas_price().unwrap_or_default();
-                }
-                TypedTransactionRequest::Legacy(m)
-            }
-            Some(TypedTransactionRequest::EIP2930(mut m)) => {
-                m.nonce = nonce;
-                m.chain_id = chain_id;
-                m.gas_limit = gas_limit;
-                if gas_price.is_none() {
-                    m.gas_price = self.gas_price().unwrap_or_default();
-                }
-                TypedTransactionRequest::EIP2930(m)
-            }
-            Some(TypedTransactionRequest::EIP1559(mut m)) => {
-                m.nonce = nonce;
-                m.chain_id = chain_id;
-                m.gas_limit = gas_limit;
-                if max_fee_per_gas.is_none() {
-                    m.max_fee_per_gas = self.gas_price().unwrap_or_default();
-                }
-                TypedTransactionRequest::EIP1559(m)
-            }
-            _ => return Err(BlockchainError::InvalidTransaction),
-        };
+        let nonce = request.nonce().unwrap_or(&on_chain_nonce);
 
         let transaction = self.sign_request(&from, request)?;
         let pending_transaction = PendingTransaction::new(transaction)?;
@@ -292,20 +258,13 @@ impl EthApi {
         if data.is_empty() {
             return Err(BlockchainError::EmptyRawTransactionData)
         }
-        let _transaction: TypedTransaction = if data[0] > 0x7f {
-            // legacy transaction
-            todo!("implement legacy decoding")
-        } else {
-            // the [TypedTransaction] requires a valid rlp input,
-            // but EIP-1559 prepends a version byte, so we need to encode the data first to get a
-            // valid rlp and then the decode implementation will strip to check the transaction
-            // version byte.
-            let extend = rlp::encode(&data);
-            match rlp::decode::<TypedTransaction>(&extend[..]) {
-                Ok(transaction) => transaction,
-                Err(_) => return Err(BlockchainError::FailedToDecodeSignedTransaction),
-            }
-        };
+
+        // first get the typed transaction and signature
+        let rlp_tx = rlp::Rlp::new(data);
+        let signed_tx: SignedTypedTransaction = SignedTypedTransaction::decode(&rlp_tx)
+            .map_err(|_| {
+                BlockchainError::FailedToDecodeSignedTransaction
+            })?;
 
         todo!()
     }
@@ -335,7 +294,7 @@ impl EthApi {
     /// Get transaction by its hash.
     ///
     /// Handler for ETH RPC call: `eth_getTransactionByHash`
-    pub async fn transaction_by_hash(&self, _: H256) -> Result<Option<Transaction>> {
+    pub async fn transaction_by_hash(&self, _: H256) -> Result<Option<TransactionResponse>> {
         todo!()
     }
 
@@ -346,7 +305,7 @@ impl EthApi {
         &self,
         _: H256,
         _: Index,
-    ) -> Result<Option<Transaction>> {
+    ) -> Result<Option<TransactionResponse>> {
         todo!()
     }
 
@@ -357,7 +316,7 @@ impl EthApi {
         &self,
         _: BlockNumber,
         _: Index,
-    ) -> Result<Option<Transaction>> {
+    ) -> Result<Option<TransactionResponse>> {
         todo!()
     }
 

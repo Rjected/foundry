@@ -1,6 +1,6 @@
 use crate::eth::error::BlockchainError;
-use ethers::types::Address;
-use forge_node_core::eth::transaction::{TypedTransaction, TypedTransactionRequest};
+use forge_node_core::eth::transaction::SignedTransaction;
+use ethers::types::{transaction::eip2718::TypedTransaction, Address};
 
 /// A transaction signer
 pub trait Signer: Send + Sync {
@@ -9,9 +9,9 @@ pub trait Signer: Send + Sync {
     /// signs a transaction request using the given account in request
     fn sign(
         &self,
-        request: TypedTransactionRequest,
+        request: TypedTransaction,
         address: &Address,
-    ) -> Result<TypedTransaction, BlockchainError>;
+    ) -> Result<SignedTransaction, BlockchainError>;
 }
 
 // TODO implement a dev signer

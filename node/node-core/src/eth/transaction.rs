@@ -3,8 +3,9 @@
 use crate::eth::utils::enveloped;
 use ethers_core::{
     types::{
-        transaction::eip2930::{AccessList, AccessListItem},
-        Address, Bytes, Signature, SignatureError, TxHash, H256, U256,
+        transaction::{eip2930::{AccessList, AccessListItem}, eip2718::TypedTransaction as EthersTypedTransaction},
+        Address, Signature, SignatureError, TxHash, H256, U256, NameOrAddress,
+        Eip2930TransactionRequest, Eip1559TransactionRequest, TransactionRequest, Bytes
     },
     utils::{
         keccak256, rlp,
@@ -17,126 +18,8 @@ use foundry_evm::{
 };
 use serde::{Deserialize, Serialize};
 
-/// Container type for various Ethereum transaction requests
-///
-/// Its variants correspond to specific allowed transactions:
-/// 1. Legacy (pre-EIP2718) [`LegacyTransactionRequest`]
-/// 2. EIP2930 (state access lists) [`EIP2930TransactionRequest`]
-/// 3. EIP1559 [`EIP1559TransactionRequest`]
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub enum TypedTransactionRequest {
-    Legacy(LegacyTransactionRequest),
-    EIP2930(EIP2930TransactionRequest),
-    EIP1559(EIP1559TransactionRequest),
-}
-
-/// Represents _all_ transaction requests received from RPC
-#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-#[serde(rename_all = "camelCase")]
-pub struct EthTransactionRequest {
-    /// from address
-    pub from: Option<Address>,
-    /// to address
-    pub to: Option<Address>,
-    /// legacy, gas Price
-    #[serde(default)]
-    pub gas_price: Option<U256>,
-    /// max base fee per gas sender is willing to pay
-    #[serde(default)]
-    pub max_fee_per_gas: Option<U256>,
-    /// miner tip
-    #[serde(default)]
-    pub max_priority_fee_per_gas: Option<U256>,
-    /// gas
-    pub gas: Option<U256>,
-    /// value of th tx in wei
-    pub value: Option<U256>,
-    /// Any additional data sent
-    pub data: Option<Bytes>,
-    /// Transaction nonce
-    pub nonce: Option<U256>,
-    /// warm storage access pre-payment
-    #[serde(default)]
-    pub access_list: Option<Vec<AccessListItem>>,
-    /// EIP-2718 type
-    #[serde(rename = "type")]
-    pub transaction_type: Option<U256>,
-}
-
-// == impl EthTransactionRequest ==
-
-impl EthTransactionRequest {
-    /// Converts the request into a [TypedTransactionRequest]
-    pub fn into_typed_request(self) -> Option<TypedTransactionRequest> {
-        let EthTransactionRequest {
-            to,
-            gas_price,
-            max_fee_per_gas,
-            max_priority_fee_per_gas,
-            gas,
-            value,
-            data,
-            nonce,
-            mut access_list,
-            ..
-        } = self;
-        match (gas_price, max_fee_per_gas, access_list.take()) {
-            // legacy transaction
-            (Some(_), None, None) => {
-                Some(TypedTransactionRequest::Legacy(LegacyTransactionRequest {
-                    nonce: nonce.unwrap_or(U256::zero()),
-                    gas_price: gas_price.unwrap_or_default(),
-                    gas_limit: gas.unwrap_or_default(),
-                    value: value.unwrap_or(U256::zero()),
-                    input: data.unwrap_or_default(),
-                    kind: match to {
-                        Some(to) => TransactionKind::Call(to),
-                        None => TransactionKind::Create,
-                    },
-                    chain_id: None,
-                }))
-            }
-            // EIP2930
-            (_, None, Some(access_list)) => {
-                Some(TypedTransactionRequest::EIP2930(EIP2930TransactionRequest {
-                    nonce: nonce.unwrap_or(U256::zero()),
-                    gas_price: gas_price.unwrap_or_default(),
-                    gas_limit: gas.unwrap_or_default(),
-                    value: value.unwrap_or(U256::zero()),
-                    input: data.unwrap_or_default(),
-                    kind: match to {
-                        Some(to) => TransactionKind::Call(to),
-                        None => TransactionKind::Create,
-                    },
-                    chain_id: 0,
-                    access_list,
-                }))
-            }
-            // EIP1559
-            (None, Some(_), access_list) | (None, None, access_list @ None) => {
-                // Empty fields fall back to the canonical transaction schema.
-                Some(TypedTransactionRequest::EIP1559(EIP1559TransactionRequest {
-                    nonce: nonce.unwrap_or(U256::zero()),
-                    max_fee_per_gas: max_fee_per_gas.unwrap_or_default(),
-                    max_priority_fee_per_gas: max_priority_fee_per_gas.unwrap_or(U256::zero()),
-                    gas_limit: gas.unwrap_or_default(),
-                    value: value.unwrap_or(U256::zero()),
-                    input: data.unwrap_or_default(),
-                    kind: match to {
-                        Some(to) => TransactionKind::Call(to),
-                        None => TransactionKind::Create,
-                    },
-                    chain_id: 0,
-                    access_list: access_list.unwrap_or_default(),
-                }))
-            }
-            _ => None,
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+// i like this type, can we add it to all the ethers types?
 pub enum TransactionKind {
     Call(Address),
     Create,
@@ -167,239 +50,6 @@ impl Decodable for TransactionKind {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EIP2930TransactionRequest {
-    pub chain_id: u64,
-    pub nonce: U256,
-    pub gas_price: U256,
-    pub gas_limit: U256,
-    pub kind: TransactionKind,
-    pub value: U256,
-    pub input: Bytes,
-    pub access_list: Vec<AccessListItem>,
-}
-
-impl EIP2930TransactionRequest {
-    pub fn hash(&self) -> H256 {
-        let encoded = rlp::encode(self);
-        let mut out = vec![0; 1 + encoded.len()];
-        out[0] = 1;
-        out[1..].copy_from_slice(&encoded);
-        H256::from_slice(keccak256(&out).as_slice())
-    }
-}
-
-impl From<EIP2930Transaction> for EIP2930TransactionRequest {
-    fn from(tx: EIP2930Transaction) -> Self {
-        Self {
-            chain_id: tx.chain_id,
-            nonce: tx.nonce,
-            gas_price: tx.gas_price,
-            gas_limit: tx.gas_limit,
-            kind: tx.kind,
-            value: tx.value,
-            input: tx.input,
-            access_list: tx.access_list.0,
-        }
-    }
-}
-
-impl Encodable for EIP2930TransactionRequest {
-    fn rlp_append(&self, s: &mut RlpStream) {
-        s.begin_list(8);
-        s.append(&self.chain_id);
-        s.append(&self.nonce);
-        s.append(&self.gas_price);
-        s.append(&self.gas_limit);
-        s.append(&self.kind);
-        s.append(&self.value);
-        s.append(&self.input.as_ref());
-        s.append_list(&self.access_list);
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LegacyTransactionRequest {
-    pub nonce: U256,
-    pub gas_price: U256,
-    pub gas_limit: U256,
-    pub kind: TransactionKind,
-    pub value: U256,
-    pub input: Bytes,
-    pub chain_id: Option<u64>,
-}
-
-// == impl LegacyTransactionRequest ==
-
-impl LegacyTransactionRequest {
-    pub fn hash(&self) -> H256 {
-        H256::from_slice(keccak256(&rlp::encode(self)).as_slice())
-    }
-}
-
-impl From<LegacyTransaction> for LegacyTransactionRequest {
-    fn from(tx: LegacyTransaction) -> Self {
-        let chain_id = tx.chain_id();
-        Self {
-            nonce: tx.nonce,
-            gas_price: tx.gas_price,
-            gas_limit: tx.gas_limit,
-            kind: tx.kind,
-            value: tx.value,
-            input: tx.input,
-            chain_id,
-        }
-    }
-}
-
-impl Encodable for LegacyTransactionRequest {
-    fn rlp_append(&self, s: &mut RlpStream) {
-        if let Some(chain_id) = self.chain_id {
-            s.begin_list(9);
-            s.append(&self.nonce);
-            s.append(&self.gas_price);
-            s.append(&self.gas_limit);
-            s.append(&self.kind);
-            s.append(&self.value);
-            s.append(&self.input.as_ref());
-            s.append(&chain_id);
-            s.append(&0_u8);
-            s.append(&0_u8);
-        } else {
-            s.begin_list(6);
-            s.append(&self.nonce);
-            s.append(&self.gas_price);
-            s.append(&self.gas_limit);
-            s.append(&self.kind);
-            s.append(&self.value);
-            s.append(&self.input.as_ref());
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EIP1559TransactionRequest {
-    pub chain_id: u64,
-    pub nonce: U256,
-    pub max_priority_fee_per_gas: U256,
-    pub max_fee_per_gas: U256,
-    pub gas_limit: U256,
-    pub kind: TransactionKind,
-    pub value: U256,
-    pub input: Bytes,
-    pub access_list: Vec<AccessListItem>,
-}
-
-// == impl EIP1559TransactionRequest ==
-
-impl EIP1559TransactionRequest {
-    pub fn hash(&self) -> H256 {
-        let encoded = rlp::encode(self);
-        let mut out = vec![0; 1 + encoded.len()];
-        out[0] = 2;
-        out[1..].copy_from_slice(&encoded);
-        H256::from_slice(keccak256(&out).as_slice())
-    }
-}
-
-impl From<EIP1559Transaction> for EIP1559TransactionRequest {
-    fn from(t: EIP1559Transaction) -> Self {
-        Self {
-            chain_id: t.chain_id,
-            nonce: t.nonce,
-            max_priority_fee_per_gas: t.max_priority_fee_per_gas,
-            max_fee_per_gas: t.max_fee_per_gas,
-            gas_limit: t.gas_limit,
-            kind: t.kind,
-            value: t.value,
-            input: t.input,
-            access_list: t.access_list.0,
-        }
-    }
-}
-
-impl Encodable for EIP1559TransactionRequest {
-    fn rlp_append(&self, s: &mut RlpStream) {
-        s.begin_list(9);
-        s.append(&self.chain_id);
-        s.append(&self.nonce);
-        s.append(&self.max_priority_fee_per_gas);
-        s.append(&self.max_fee_per_gas);
-        s.append(&self.gas_limit);
-        s.append(&self.kind);
-        s.append(&self.value);
-        s.append(&self.input.as_ref());
-        s.append_list(&self.access_list);
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum TypedTransaction {
-    /// Legacy transaction type
-    Legacy(LegacyTransaction),
-    /// EIP-2930 transaction
-    EIP2930(EIP2930Transaction),
-    /// EIP-1559 transaction
-    EIP1559(EIP1559Transaction),
-}
-
-// == impl TypedTransaction ==
-
-impl TypedTransaction {
-    pub fn nonce(&self) -> &U256 {
-        match self {
-            TypedTransaction::Legacy(t) => t.nonce(),
-            TypedTransaction::EIP2930(t) => t.nonce(),
-            TypedTransaction::EIP1559(t) => t.nonce(),
-        }
-    }
-
-    pub fn hash(&self) -> H256 {
-        match self {
-            TypedTransaction::Legacy(t) => t.hash(),
-            TypedTransaction::EIP2930(t) => t.hash(),
-            TypedTransaction::EIP1559(t) => t.hash(),
-        }
-    }
-
-    /// Recovers the Ethereum address which was used to sign the transaction.
-    pub fn recover(&self) -> Result<Address, SignatureError> {
-        match self {
-            TypedTransaction::Legacy(tx) => tx.recover(),
-            TypedTransaction::EIP2930(tx) => tx.recover(),
-            TypedTransaction::EIP1559(tx) => tx.recover(),
-        }
-    }
-}
-
-impl Encodable for TypedTransaction {
-    fn rlp_append(&self, s: &mut RlpStream) {
-        match self {
-            TypedTransaction::Legacy(tx) => tx.rlp_append(s),
-            TypedTransaction::EIP2930(tx) => enveloped(1, tx, s),
-            TypedTransaction::EIP1559(tx) => enveloped(2, tx, s),
-        }
-    }
-}
-
-impl Decodable for TypedTransaction {
-    fn decode(rlp: &Rlp) -> Result<Self, DecoderError> {
-        let data = rlp.data()?;
-        let first = *data.get(0).ok_or(DecoderError::Custom("empty slice"))?;
-        if rlp.is_list() {
-            return Ok(TypedTransaction::Legacy(rlp.as_val()?))
-        }
-        let s = data.get(1..).ok_or(DecoderError::Custom("no tx body"))?;
-        if first == 0x01 {
-            return rlp::decode(s).map(TypedTransaction::EIP2930)
-        }
-        if first == 0x02 {
-            return rlp::decode(s).map(TypedTransaction::EIP1559)
-        }
-        Err(DecoderError::Custom("invalid tx type"))
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LegacyTransaction {
     pub nonce: U256,
@@ -422,7 +72,8 @@ impl LegacyTransaction {
 
     /// Recovers the Ethereum address which was used to sign the transaction.
     pub fn recover(&self) -> Result<Address, SignatureError> {
-        self.signature.recover(LegacyTransactionRequest::from(self.clone()).hash())
+        // todo since the requests are removed and it wouldn't compile otherwise
+        todo!()
     }
 
     pub fn chain_id(&self) -> Option<u64> {
@@ -501,12 +152,8 @@ impl EIP2930Transaction {
 
     /// Recovers the Ethereum address which was used to sign the transaction.
     pub fn recover(&self) -> Result<Address, SignatureError> {
-        let mut sig = [0u8; 65];
-        sig[0..32].copy_from_slice(&self.r[..]);
-        sig[32..64].copy_from_slice(&self.s[..]);
-        sig[64] = self.odd_y_parity as u8;
-        let signature = Signature::try_from(&sig[..])?;
-        signature.recover(EIP2930TransactionRequest::from(self.clone()).hash())
+        // todo since the requests are removed and it wouldn't compile otherwise
+        todo!()
     }
 }
 
@@ -588,12 +235,8 @@ impl EIP1559Transaction {
 
     /// Recovers the Ethereum address which was used to sign the transaction.
     pub fn recover(&self) -> Result<Address, SignatureError> {
-        let mut sig = [0u8; 65];
-        sig[0..32].copy_from_slice(&self.r[..]);
-        sig[32..64].copy_from_slice(&self.s[..]);
-        sig[64] = self.odd_y_parity as u8;
-        let signature = Signature::try_from(&sig[..])?;
-        signature.recover(EIP1559TransactionRequest::from(self.clone()).hash())
+        // todo since the requests are removed and it wouldn't compile otherwise
+        todo!()
     }
 }
 
@@ -646,11 +289,143 @@ impl Decodable for EIP1559Transaction {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TypedTransaction {
+    /// Legacy transaction type
+    Legacy(LegacyTransaction),
+    /// EIP-2930 transaction
+    EIP2930(EIP2930Transaction),
+    /// EIP-1559 transaction
+    EIP1559(EIP1559Transaction),
+}
+
+// == impl TypedTransaction ==
+
+impl TypedTransaction {
+    pub fn nonce(&self) -> &U256 {
+        match self {
+            TypedTransaction::Legacy(t) => t.nonce(),
+            TypedTransaction::EIP2930(t) => t.nonce(),
+            TypedTransaction::EIP1559(t) => t.nonce(),
+        }
+    }
+
+    pub fn hash(&self) -> H256 {
+        match self {
+            TypedTransaction::Legacy(t) => t.hash(),
+            TypedTransaction::EIP2930(t) => t.hash(),
+            TypedTransaction::EIP1559(t) => t.hash(),
+        }
+    }
+
+    /// Recovers the Ethereum address which was used to sign the transaction.
+    pub fn recover(&self) -> Result<Address, SignatureError> {
+        match self {
+            TypedTransaction::Legacy(tx) => tx.recover(),
+            TypedTransaction::EIP2930(tx) => tx.recover(),
+            TypedTransaction::EIP1559(tx) => tx.recover(),
+        }
+    }
+}
+
+impl Encodable for TypedTransaction {
+    fn rlp_append(&self, s: &mut RlpStream) {
+        match self {
+            TypedTransaction::Legacy(tx) => tx.rlp_append(s),
+            TypedTransaction::EIP2930(tx) => enveloped(1, tx, s),
+            TypedTransaction::EIP1559(tx) => enveloped(2, tx, s),
+        }
+    }
+}
+
+impl Decodable for TypedTransaction {
+    fn decode(rlp: &Rlp) -> Result<Self, DecoderError> {
+        let data = rlp.data()?;
+        let first = *data.get(0).ok_or(DecoderError::Custom("empty slice"))?;
+        if rlp.is_list() {
+            return Ok(TypedTransaction::Legacy(rlp.as_val()?))
+        }
+        let s = data.get(1..).ok_or(DecoderError::Custom("no tx body"))?;
+        if first == 0x01 {
+            return rlp::decode(s).map(TypedTransaction::EIP2930)
+        }
+        if first == 0x02 {
+            return rlp::decode(s).map(TypedTransaction::EIP1559)
+        }
+        Err(DecoderError::Custom("invalid tx type"))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Signed is a signed transaction request - we might be able to introduce this kind of type into
+/// ethers. This would replace the above `TypedTransaction`. rlp::Encodable and rlp::Decodable
+/// still need to be implemented. In ethers-rs#1096 the decoding methods are NOT part of the
+/// ethers-core::...::TypedTransaction Decodable and Encodable implementations, mainly because we
+/// are basically decoding to an entirely different type, a signed transaction. It might make sense
+/// to introduce a signed transaction type like the following into ethers-rs, using ethers-rs#1096
+/// to implement Encodable and Decodable. Then, we could remove the `TypedTransaction`
+pub struct SignedTransaction {
+    pub tx: EthersTypedTransaction,
+    pub signature: Signature,
+}
+
+impl SignedTransaction {
+    pub fn nonce(&self) -> Option<&U256> {
+        self.tx.nonce()
+    }
+
+    /// returns the tx hash for the signed tx
+    pub fn hash(&self) -> H256 {
+        H256::from_slice(&keccak256(self.tx.rlp_signed(&self.signature))[..])
+    }
+
+    /// Recovers the Ethereum address which was used to sign the transaction.
+    pub fn recover(&self) -> Result<Address, SignatureError> {
+        self.signature.recover(self.tx.sighash())
+    }
+
+    // just for convenience, remove if we start using kinds. also since ethers transactions use
+    // NameOrAddress we have to handle the Name case!
+    // This begs the question, will ethers send a .eth name over jsonrpc if it's passed?
+    // Wouldn't clients reject this always?
+    // If so, we should prevent serialization when it's a Name, or figure out whether or not it's
+    // worth replacing NameOrAddress with Kind, combining the two types, or something else.
+    // If other clients reject ens names, we should expect to not receive a Name here and should
+    // error out.
+    /// Gets the TransactionKind from the underlying transaction type
+    pub fn kind(&self) -> TransactionKind {
+        self.tx.to().map_or(TransactionKind::Create ,
+        |to| {
+            match to {
+                NameOrAddress::Name(_) => panic!("names are not allowed"),
+                NameOrAddress::Address(addr) => TransactionKind::Call(*addr),
+            }
+        })
+    }
+
+    // questions: nonce here returns an Option<U256>. Is this desirable?
+    // related is whether or not we want a `chain_id` method to return the chain_id from the
+    // signature, or from the inner tx struct.
+    pub fn chain_id(&self) -> Option<u64> {
+        if self.signature.v > 36 {
+            Some((self.signature.v - 35) / 2)
+        } else {
+            None
+        }
+    }
+}
+
+// NOTE: ethers types vs these types. ethers types have Option everywhere, these types don't.
+// ethers types are meant to be filled / built, so it makes sense to have options
+// However, this means we need to handle these options, for example for converting to revm TxEnv.
+// This is sort of annoying because we'd need to change to_revm_tx_env to be a result.
+// As we've seen above in the SignedTransaction nonce method, this also means we need to use
+// Options there, and anywhere we would use that method.
 /// Queued transaction
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PendingTransaction {
     /// The actual transaction
-    pub transaction: TypedTransaction,
+    pub transaction: SignedTransaction,
     /// the recovered sender of this transaction
     sender: Address,
     /// hash of `transaction`, so it can easily be reused with encoding and hashing agan
@@ -661,12 +436,12 @@ pub struct PendingTransaction {
 
 impl PendingTransaction {
     /// Creates a new pending transaction and tries to verify transaction and recover sender.
-    pub fn new(transaction: TypedTransaction) -> Result<Self, SignatureError> {
+    pub fn new(transaction: SignedTransaction) -> Result<Self, SignatureError> {
         let sender = transaction.recover()?;
         Ok(Self { hash: transaction.hash(), transaction, sender })
     }
 
-    pub fn nonce(&self) -> &U256 {
+    pub fn nonce(&self) -> Option<&U256> {
         self.transaction.nonce()
     }
 
@@ -689,6 +464,7 @@ impl PendingTransaction {
                 .collect()
         }
 
+        let current_kind = self.transaction.kind();
         fn transact_to(kind: &TransactionKind) -> TransactTo {
             match kind {
                 TransactionKind::Call(c) => TransactTo::Call(*c),
@@ -697,71 +473,62 @@ impl PendingTransaction {
         }
 
         let caller = *self.sender();
-        match &self.transaction {
-            TypedTransaction::Legacy(tx) => {
-                let chain_id = tx.chain_id();
-                let LegacyTransaction { nonce, gas_price, gas_limit, value, kind, input, .. } = tx;
+        match &self.transaction.tx {
+            // TODO: remove unwraps
+            // to remove the unwraps we need to return a Result, but we might want to make sure
+            // that these fields are filled before we would ever return an Err here
+            EthersTypedTransaction::Legacy(tx) => {
+                let TransactionRequest { nonce, gas_price, gas, value, data, chain_id, .. } = tx;
                 TxEnv {
                     caller,
-                    transact_to: transact_to(kind),
-                    data: input.0.clone(),
-                    chain_id,
-                    nonce: Some(nonce.as_u64()),
-                    value: *value,
-                    gas_price: *gas_price,
+                    transact_to: transact_to(&current_kind),
+                    data: data.clone().unwrap().0,
+                    chain_id: chain_id.map(|id| id.as_u64()),
+                    nonce: Some(nonce.unwrap().as_u64()),
+                    value: value.unwrap(),
+                    gas_price: gas_price.unwrap(),
                     gas_priority_fee: None,
-                    gas_limit: gas_limit.as_u64(),
+                    gas_limit: gas.unwrap().as_u64(),
                     access_list: vec![],
                 }
             }
-            TypedTransaction::EIP2930(tx) => {
-                let EIP2930Transaction {
-                    chain_id,
-                    nonce,
-                    gas_price,
-                    gas_limit,
-                    kind,
-                    value,
-                    input,
-                    access_list,
-                    ..
-                } = tx;
+            EthersTypedTransaction::Eip2930(tx) => {
+                let TransactionRequest { nonce, gas_price, gas, value, data, chain_id, .. } = &tx.tx;
                 TxEnv {
                     caller,
-                    transact_to: transact_to(kind),
-                    data: input.0.clone(),
-                    chain_id: Some(*chain_id),
-                    nonce: Some(nonce.as_u64()),
-                    value: *value,
-                    gas_price: *gas_price,
+                    transact_to: transact_to(&current_kind),
+                    data: data.clone().unwrap().0,
+                    chain_id: chain_id.map(|id| id.as_u64()),
+                    nonce: Some(nonce.unwrap().as_u64()),
+                    value: value.unwrap(),
+                    gas_price: gas_price.unwrap(),
                     gas_priority_fee: None,
-                    gas_limit: gas_limit.as_u64(),
-                    access_list: to_access_list(access_list.0.clone()),
+                    gas_limit: gas.unwrap().as_u64(),
+                    access_list: to_access_list(tx.access_list.0.clone()),
                 }
             }
-            TypedTransaction::EIP1559(tx) => {
-                let EIP1559Transaction {
+            EthersTypedTransaction::Eip1559(tx) => {
+                let Eip1559TransactionRequest {
                     chain_id,
                     nonce,
                     max_priority_fee_per_gas,
                     max_fee_per_gas,
-                    gas_limit,
-                    kind,
+                    gas,
                     value,
-                    input,
+                    data,
                     access_list,
                     ..
                 } = tx;
                 TxEnv {
                     caller,
-                    transact_to: transact_to(kind),
-                    data: input.0.clone(),
-                    chain_id: Some(*chain_id),
-                    nonce: Some(nonce.as_u64()),
-                    value: *value,
-                    gas_price: *max_fee_per_gas,
-                    gas_priority_fee: Some(*max_priority_fee_per_gas),
-                    gas_limit: gas_limit.as_u64(),
+                    transact_to: transact_to(&current_kind),
+                    data: data.clone().unwrap().0,
+                    chain_id: chain_id.map(|id| id.as_u64()),
+                    nonce: Some(nonce.unwrap().as_u64()),
+                    value: value.unwrap(),
+                    gas_price: max_fee_per_gas.unwrap(),
+                    gas_priority_fee: *max_priority_fee_per_gas,
+                    gas_limit: gas.unwrap().as_u64(),
                     access_list: to_access_list(access_list.0.clone()),
                 }
             }
