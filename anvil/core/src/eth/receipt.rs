@@ -6,10 +6,11 @@ use ethers_core::{
         rlp::{Decodable, DecoderError, Encodable, Rlp, RlpStream},
     },
 };
+use fastrlp::{RlpEncodable, RlpDecodable};
 use foundry_evm::revm;
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, RlpEncodable, RlpDecodable)]
 pub struct Log {
     pub address: Address,
     pub topics: Vec<H256>,
