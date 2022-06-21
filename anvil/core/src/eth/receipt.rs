@@ -150,6 +150,15 @@ impl Decodable for TypedReceipt {
     }
 }
 
+impl fastrlp::Encodable for TypedReceipt {
+    fn length(&self) -> usize {
+        todo!()
+    }
+    fn encode(&self, out: &mut dyn fastrlp::BufMut) {
+        todo!()
+    }
+}
+
 impl From<TypedReceipt> for EIP658Receipt {
     fn from(v3: TypedReceipt) -> Self {
         match v3 {
