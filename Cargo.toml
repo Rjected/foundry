@@ -54,6 +54,20 @@ panic = "abort"
 # We end up stripping away these symbols anyway
 debug = 0
 
+## temporary, for ethereum-types fastrlp impls
+[patch.crates-io]
+fastrlp = { git = "https://github.com/rjected/fastrlp", branch = "implement-ethereum-types", features = ["std", "derive", "ethereum-types"] }
+
+# temporary, for fastrlp
+[patch."https://github.com/gakonst/ethers-rs"]
+ethers = { git = "https://github.com/rjected/ethers-rs", branch = "fastrlp" }
+ethers-core = { git = "https://github.com/rjected/ethers-rs", branch = "fastrlp" }
+ethers-signers = { git = "https://github.com/rjected/ethers-rs", branch = "fastrlp" }
+ethers-etherscan = { git = "https://github.com/rjected/ethers-rs", branch = "fastrlp" }
+ethers-providers = { git = "https://github.com/rjected/ethers-rs", branch = "fastrlp" }
+ethers-solc = { git = "https://github.com/rjected/ethers-rs", branch = "fastrlp", features = ["async", "svm-solc"] }
+ethers-contract = { git = "https://github.com/rjected/ethers-rs", branch = "fastrlp" }
+
 ## Patch ethers-rs with a local checkout then run `cargo update -p ethers`
 #[patch."https://github.com/gakonst/ethers-rs"]
 #ethers = { path = "../ethers-rs" }
