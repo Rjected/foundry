@@ -51,7 +51,7 @@ impl Decodable for Log {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, RlpEncodable, RlpDecodable)]
 pub struct EIP658Receipt {
     pub status_code: u8,
     pub gas_used: U256,
@@ -153,10 +153,42 @@ impl Decodable for TypedReceipt {
 
 impl fastrlp::Encodable for TypedReceipt {
     fn length(&self) -> usize {
-        todo!()
+        match self {
+            TypedReceipt::Legacy(r) => r.length(),
+            TypedReceipt::EIP2930(r) => r.length() + 1,
+            TypedReceipt::EIP1559(r) => r.length() + 1,
+        }
     }
     fn encode(&self, out: &mut dyn fastrlp::BufMut) {
-        todo!()
+        match self {
+            TypedReceipt::Legacy(r) => r.encode(out),
+            TypedReceipt::EIP2930(r) => {
+                out.put_u8(0x01);
+                r.encode(out);
+            }
+            TypedReceipt::EIP1559(r) => {
+                out.put_u8(0x02);
+                r.encode(out);
+            }
+        }
+    }
+}
+
+impl fastrlp::Decodable for TypedReceipt {
+    fn decode(buf: &mut &[u8]) -> Result<Self, fastrlp::DecodeError> {
+        // check for receipt type
+        let receipt_type = *buf.first().ok_or(fastrlp::DecodeError::Custom("cannot decode a receipt from empty bytes"))?;
+
+        if receipt_type == 0x01 {
+            let receipt = <EIP658Receipt as fastrlp::Decodable>::decode(&mut &buf[1..])?;
+            Ok(TypedReceipt::EIP2930(receipt))
+        } else if receipt_type == 0x02 {
+            let receipt = <EIP658Receipt as fastrlp::Decodable>::decode(&mut &buf[1..])?;
+            Ok(TypedReceipt::EIP1559(receipt))
+        } else {
+            let receipt = <EIP658Receipt as fastrlp::Decodable>::decode(buf)?;
+            Ok(TypedReceipt::Legacy(receipt))
+        }
     }
 }
 
