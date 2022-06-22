@@ -10,6 +10,7 @@ use ethers_core::{
         rlp::{Decodable, DecoderError, Encodable, Rlp, RlpStream},
     },
 };
+use fastrlp::{Encodable as FastEncodable, length_of_length, Decodable as FastDecodable};
 use serde::{Deserialize, Serialize};
 
 /// Container type that gathers all block data
@@ -113,6 +114,33 @@ impl Header {
     pub fn hash(&self) -> H256 {
         H256::from_slice(keccak256(&rlp::encode(self)).as_slice())
     }
+
+    /// Returns the rlp length of the Header body, _not including_ trailing EIP155 fields or the
+    /// rlp list header
+    /// To get the length including the rlp list header, refer to the Encodable implementation.
+    pub(crate) fn header_payload_length(&self) -> usize {
+        let mut length = 0;
+        length += self.parent_hash.length();
+        length += self.ommers_hash.length();
+        length += self.beneficiary.length();
+        length += self.state_root.length();
+        length += self.transactions_root.length();
+        length += self.receipts_root.length();
+        length += self.logs_bloom.length();
+        length += self.difficulty.length();
+        length += self.number.length();
+        length += self.gas_limit.length();
+        length += self.gas_used.length();
+        length += self.timestamp.length();
+        length += self.extra_data.length();
+        length += self.mix_hash.length();
+        length += self.nonce.length();
+        length += match self.base_fee_per_gas {
+            Some(base_fee_per_gas) => base_fee_per_gas.length(),
+            None => 0,
+        };
+        length
+    }
 }
 
 impl rlp::Encodable for Header {
@@ -158,12 +186,78 @@ impl rlp::Decodable for Header {
             mix_hash: rlp.val_at(13)?,
             nonce: rlp.val_at(14)?,
             base_fee_per_gas: if let Ok(base_fee) = rlp.at(15) {
-                Some(U256::decode(&base_fee)?)
+                Some(<U256 as Decodable>::decode(&base_fee)?)
             } else {
                 None
             },
         };
         Ok(result)
+    }
+}
+
+impl fastrlp::Encodable for Header {
+    fn length(&self) -> usize {
+        // add each of the fields' rlp encoded lengths
+        let mut length = 0;
+        length += self.header_payload_length();
+
+        // header would encode length_of_length + 1 bytes
+        length += if length > 55 { 1 + length_of_length(length) } else { 1 };
+
+        length
+    }
+
+    fn encode(&self, out: &mut dyn fastrlp::BufMut) {
+        let list_header = fastrlp::Header { list: true, payload_length: self.header_payload_length() };
+        list_header.encode(out);
+        self.parent_hash.encode(out);
+        self.ommers_hash.encode(out);
+        self.beneficiary.encode(out);
+        self.state_root.encode(out);
+        self.transactions_root.encode(out);
+        self.receipts_root.encode(out);
+        self.logs_bloom.encode(out);
+        self.difficulty.encode(out);
+        self.number.encode(out);
+        self.gas_limit.encode(out);
+        self.gas_used.encode(out);
+        self.timestamp.encode(out);
+        self.extra_data.encode(out);
+        self.mix_hash.encode(out);
+        self.nonce.encode(out);
+        if let Some(base_fee_per_gas) = self.base_fee_per_gas {
+            base_fee_per_gas.encode(out);
+        }
+    }
+}
+
+impl fastrlp::Decodable for Header {
+    fn decode(buf: &mut &[u8]) -> Result<Self, fastrlp::DecodeError> {
+        // slice out the rlp list header
+        let _header = fastrlp::Header::decode(buf)?;
+
+        Ok(Self {
+            parent_hash: <H256 as FastDecodable>::decode(buf)?,
+            ommers_hash: <H256 as FastDecodable>::decode(buf)?,
+            beneficiary: <Address as FastDecodable>::decode(buf)?,
+            state_root: <H256 as FastDecodable>::decode(buf)?,
+            transactions_root: <H256 as FastDecodable>::decode(buf)?,
+            receipts_root: <H256 as FastDecodable>::decode(buf)?,
+            logs_bloom: <Bloom as FastDecodable>::decode(buf)?,
+            difficulty: <U256 as FastDecodable>::decode(buf)?,
+            number: <U256 as FastDecodable>::decode(buf)?,
+            gas_limit: <U256 as FastDecodable>::decode(buf)?,
+            gas_used: <U256 as FastDecodable>::decode(buf)?,
+            timestamp: <u64 as FastDecodable>::decode(buf)?,
+            extra_data: <Bytes as FastDecodable>::decode(buf)?,
+            mix_hash: <H256 as FastDecodable>::decode(buf)?,
+            nonce: <U64 as FastDecodable>::decode(buf)?,
+            base_fee_per_gas: if let Ok(base_fee) = <U256 as FastDecodable>::decode(buf) {
+                Some(base_fee)
+            } else {
+                None
+            }
+        })
     }
 }
 
