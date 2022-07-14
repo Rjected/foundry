@@ -107,6 +107,9 @@ pub enum EthRequest {
     #[serde(rename = "eth_getTransactionByHash", with = "sequence")]
     EthGetTransactionByHash(TxHash),
 
+    #[serde(rename = "eth_getRawTransactionByHash", with = "sequence")]
+    EthGetRawTransactionByHash(TxHash),
+
     #[serde(rename = "eth_getTransactionByBlockHashAndIndex")]
     EthGetTransactionByBlockHashAndIndex(TxHash, Index),
 

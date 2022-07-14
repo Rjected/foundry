@@ -36,6 +36,7 @@ use anvil_core::{
     types::{Forking, Index},
 };
 use anvil_rpc::error::RpcError;
+use bytes::BytesMut;
 use ethers::{
     prelude::{BlockNumber, TxHash, H256, U256, U64},
     types::{
@@ -1352,6 +1353,29 @@ impl Backend {
         }
 
         Ok(None)
+    }
+
+    pub async fn raw_transaction_by_hash(&self, hash: H256) -> Result<Option<BytesMut>, BlockchainError> {
+        trace!(target: "backend", "raw_transaction_by_hash={:?}", hash);
+        let (info, block) = {
+            let storage = self.blockchain.storage.read_recursive();
+            let MinedTransaction { info, block_hash, .. } =
+                match storage.transactions.get(&hash) {
+                    Some(tx) => tx.clone(),
+                    None => return Ok(None),
+                };
+            let block = match storage.blocks.get(&block_hash) {
+                Some(block) => block.clone(),
+                None => return Ok(None),
+            };
+            (info, block)
+        };
+
+        let tx = block.transactions.get(info.transaction_index as usize);
+        match tx {
+            Some(tx) => Ok(Some(rlp::encode(tx))),
+            None => Ok(None),
+        }
     }
 
     pub fn mined_transaction_by_hash(&self, hash: H256) -> Option<Transaction> {

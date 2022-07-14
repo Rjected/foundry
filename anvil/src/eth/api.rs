@@ -35,6 +35,7 @@ use anvil_core::{
     types::{EvmMineOptions, Forking, GethDebugTracingOptions, Index, Work},
 };
 use anvil_rpc::{error::RpcError, response::ResponseResult};
+use bytes::BytesMut;
 use ethers::{
     abi::ethereum_types::H64,
     prelude::TxpoolInspect,
@@ -46,7 +47,7 @@ use ethers::{
         TransactionRequest, TxHash, TxpoolContent, TxpoolInspectSummary, TxpoolStatus, H256, U256,
         U64,
     },
-    utils::rlp,
+    utils::rlp
 };
 use foundry_evm::{
     revm::{return_ok, return_revert, Return},
@@ -135,6 +136,9 @@ impl EthApi {
             }
             EthRequest::EthGetTransactionByHash(hash) => {
                 self.transaction_by_hash(hash).await.to_rpc_result()
+            }
+            EthRequest::EthGetRawTransactionByHash(hash) => {
+                self.raw_transaction_by_hash(hash).await.to_rpc_result()
             }
             EthRequest::EthSendTransaction(request) => {
                 self.send_transaction(*request).await.to_rpc_result()
@@ -766,6 +770,17 @@ impl EthApi {
         }
 
         Ok(tx)
+    }
+
+    /// Get a raw transaction by its hash.
+    ///
+    /// This will check the storage for a matching transaction, if no transaction exists in storage
+    /// this will also scan the mempool for a matching pending transaction
+    ///
+    /// Handler for ETH RPC call: `eth_getRawTransactionByHash`
+    pub async fn raw_transaction_by_hash(&self, hash: H256) -> Result<Option<BytesMut>> {
+        node_info!("eth_getRawTransactionByHash");
+        self.backend.raw_transaction_by_hash(hash).await
     }
 
     /// Returns transaction at given block hash and index.
