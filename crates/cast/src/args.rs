@@ -314,7 +314,20 @@ pub async fn run_command(args: CastArgs) -> Result<()> {
                 Cast::new(provider).base_fee(block.unwrap_or(BlockId::Number(Latest))).await?
             )?
         }
-        CastSubcommand::Block { block, full, field, raw, rpc } => {
+        CastSubcommand::Block {
+            block,
+            full,
+            field,
+            raw,
+            pretty,
+            sort_by,
+            filter,
+            limit,
+            reverse,
+            no_truncate,
+            decode,
+            rpc,
+        } => {
             let config = rpc.load_config()?;
             let provider = utils::get_provider(&config)?;
 
@@ -324,7 +337,19 @@ pub async fn run_command(args: CastArgs) -> Result<()> {
             sh_println!(
                 "{}",
                 Cast::new(provider)
-                    .block(block.unwrap_or(BlockId::Number(Latest)), full, field, raw)
+                    .block(
+                        block.unwrap_or(BlockId::Number(Latest)),
+                        full,
+                        field,
+                        raw,
+                        pretty,
+                        sort_by,
+                        filter,
+                        limit,
+                        reverse,
+                        no_truncate,
+                        decode
+                    )
                     .await?
             )?
         }

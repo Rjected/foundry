@@ -61,6 +61,7 @@ pub mod base;
 pub mod errors;
 mod rlp_converter;
 pub mod tx;
+mod tx_analysis;
 
 use rlp_converter::Item;
 
@@ -352,7 +353,7 @@ impl<P: Provider<AnyNetwork>> Cast<P> {
     /// let provider =
     ///     ProviderBuilder::<_, _, AnyNetwork>::default().connect("http://localhost:8545").await?;
     /// let cast = Cast::new(provider);
-    /// let block = cast.block(5, true, None, false).await?;
+    /// let block = cast.block(5, true, None, false, false, None, None, None, false, false, false).await?
     /// println!("{}", block);
     /// # Ok(())
     /// # }
@@ -363,6 +364,13 @@ impl<P: Provider<AnyNetwork>> Cast<P> {
         full: bool,
         field: Option<String>,
         raw: bool,
+        pretty: bool,
+        sort_by: Option<String>,
+        filter: Option<String>,
+        limit: Option<usize>,
+        reverse: bool,
+        no_truncate: bool,
+        decode: bool,
     ) -> Result<String> {
         let block = block.into();
         if let Some(ref field) = field
@@ -385,6 +393,35 @@ impl<P: Provider<AnyNetwork>> Cast<P> {
         } else if let Some(ref field) = field {
             get_pretty_block_attr(&block, field)
                 .unwrap_or_else(|| format!("{field} is not a valid block field"))
+        } else if pretty && full {
+            // Use transaction analysis for pretty printing
+            let transactions =
+                tx_analysis::TransactionAnalyzer::extract_transactions(&block.inner.transactions);
+
+            // Fetch all receipts for the block at once and extract gas used
+            let mut receipt_gas_used = std::collections::HashMap::new();
+            if let Some(receipts) = self
+                .provider
+                .get_block_receipts(BlockId::Hash(block.inner.header.hash.into()))
+                .await?
+            {
+                for receipt in receipts {
+                    receipt_gas_used.insert(receipt.transaction_hash, receipt.gas_used as u128);
+                }
+            }
+
+            tx_analysis::TransactionAnalyzer::format_pretty_table(
+                &block.inner,
+                transactions,
+                receipt_gas_used,
+                sort_by,
+                filter,
+                limit,
+                reverse,
+                no_truncate,
+                decode,
+            )
+            .await?
         } else if shell::is_json() {
             serde_json::to_value(&block).unwrap().to_string()
         } else {
@@ -399,6 +436,13 @@ impl<P: Provider<AnyNetwork>> Cast<P> {
             false,
             // Select only select field
             Some(field),
+            false,
+            false,
+            None,
+            None,
+            None,
+            false,
+            false,
             false,
         )
         .await?
@@ -429,12 +473,33 @@ impl<P: Provider<AnyNetwork>> Cast<P> {
             // Select only block hash
             Some(String::from("hash")),
             false,
+            false,
+            None,
+            None,
+            None,
+            false,
+            false,
+            false,
         )
         .await?;
 
         Ok(match &genesis_hash[..] {
             "0xd4e56740f876aef8c010b86a40d5f56745a118d0906a34e69aec8c0db1cb8fa3" => {
-                match &(Self::block(self, 1920000, false, Some("hash".to_string()), false).await?)[..]
+                match &(Self::block(
+                    self,
+                    1920000,
+                    false,
+                    Some("hash".to_string()),
+                    false,
+                    false,
+                    None,
+                    None,
+                    None,
+                    false,
+                    false,
+                    false,
+                )
+                .await?)[..]
                 {
                     "0x94365e3a8c0b35089c1d1195081fe7489b528a84b22199c916180db8b28ade7f" => {
                         "etclive"
@@ -477,7 +542,22 @@ impl<P: Provider<AnyNetwork>> Cast<P> {
             "0x6d3c66c5357ec91d5c43af47e234a939b22557cbb552dc45bebbceeed90fbe34" => "bsctest",
             "0x0d21840abff46b96c84b2ac9e10e4f5cdaeb5693cb665db62a2f3b02d2d57b5b" => "bsc",
             "0x31ced5b9beb7f8782b014660da0cb18cc409f121f408186886e1ca3e8eeca96b" => {
-                match &(Self::block(self, 1, false, Some(String::from("hash")), false).await?)[..] {
+                match &(Self::block(
+                    self,
+                    1,
+                    false,
+                    Some(String::from("hash")),
+                    false,
+                    false,
+                    None,
+                    None,
+                    None,
+                    false,
+                    false,
+                    false,
+                )
+                .await?)[..]
+                {
                     "0x738639479dc82d199365626f90caa82f7eafcfe9ed354b456fb3d294597ceb53" => {
                         "avalanche-fuji"
                     }

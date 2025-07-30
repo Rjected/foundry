@@ -143,7 +143,7 @@ fn extract_revert_reason<S: AsRef<str>>(error_string: S) -> Option<String> {
         .map(|index| error_string.as_ref().split_at(index + message_substr.len()).1.to_string())
 }
 
-/// Returns the `UiFmt::pretty()` formatted attribute of the transaction receipt
+/// Returns the [`UIfmt::pretty()`] formatted attribute of the transaction receipt
 pub fn get_pretty_tx_receipt_attr(
     receipt: &TransactionReceiptWithRevertReason,
     attr: &str,

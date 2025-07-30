@@ -369,6 +369,34 @@ pub enum CastSubcommand {
         #[arg(long, env = "CAST_FULL_BLOCK")]
         full: bool,
 
+        /// Display transactions in a pretty table format (requires --full).
+        #[arg(long, requires = "full")]
+        pretty: bool,
+
+        /// Sort transactions by field: gas-used, gas-price, value, nonce, index.
+        #[arg(long, value_name = "FIELD", requires = "pretty")]
+        sort_by: Option<String>,
+
+        /// Filter transactions with expression like "gas>100000" or "to=0x...".
+        #[arg(long, value_name = "EXPR", requires = "pretty")]
+        filter: Option<String>,
+
+        /// Limit the number of transactions to display.
+        #[arg(long, value_name = "COUNT", requires = "pretty")]
+        limit: Option<usize>,
+
+        /// Reverse the sort order.
+        #[arg(long, requires = "sort_by")]
+        reverse: bool,
+
+        /// Show full addresses and hashes instead of truncated ones.
+        #[arg(long, requires = "pretty")]
+        no_truncate: bool,
+
+        /// Decode method signatures (requires internet access).
+        #[arg(long, requires = "pretty")]
+        decode: bool,
+
         #[command(flatten)]
         rpc: RpcOpts,
     },

@@ -822,7 +822,7 @@ impl UIfmt for SignedAuthorization {
     }
 }
 
-/// Returns the `UiFmt::pretty()` formatted attribute of the transactions
+/// Returns the [`UIfmt::pretty()`] formatted attribute of the transactions
 pub fn get_pretty_tx_attr(transaction: &Transaction<AnyTxEnvelope>, attr: &str) -> Option<String> {
     let sig = match &transaction.inner.inner() {
         AnyTxEnvelope::Ethereum(envelope) => match &envelope {
@@ -853,7 +853,7 @@ pub fn get_pretty_tx_attr(transaction: &Transaction<AnyTxEnvelope>, attr: &str) 
     }
 }
 
-/// Returns the `UiFmt::pretty()` formatted attribute of the given block
+/// Returns the [`UIfmt::pretty()`] formatted attribute of the given block
 pub fn get_pretty_block_attr(block: &AnyRpcBlock, attr: &str) -> Option<String> {
     match attr {
         "baseFeePerGas" | "base_fee_per_gas" => Some(block.header.base_fee_per_gas.pretty()),
