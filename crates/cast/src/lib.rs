@@ -410,12 +410,18 @@ impl<P: Provider<AnyNetwork>> Cast<P> {
                 }
             }
 
+            // Parse sort field if provided
+            let sort_field = sort_by.map(|s| s.parse::<tx_analysis::TxSortField>()).transpose()?;
+
+            // Parse filter if provided
+            let filter_parsed = filter.map(|f| f.parse::<tx_analysis::TxFilter>()).transpose()?;
+
             tx_analysis::TransactionAnalyzer::format_pretty_table(
                 &block.inner,
                 transactions,
                 receipt_gas_used,
-                sort_by,
-                filter,
+                sort_field,
+                filter_parsed,
                 limit,
                 reverse,
                 no_truncate,

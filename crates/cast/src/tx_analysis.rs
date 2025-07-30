@@ -6,7 +6,120 @@ use alloy_rpc_types::{Block, BlockTransactions, Header};
 use comfy_table::{Attribute, Cell, Color, Table};
 use eyre::Result;
 use foundry_common::fmt::UIfmt;
-use std::{cmp::Ordering, collections::HashMap};
+use std::{cmp::Ordering, collections::HashMap, str::FromStr};
+
+/// Field to sort transactions by
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TxSortField {
+    GasUsed,
+    GasPrice,
+    Value,
+    Nonce,
+    Index,
+}
+
+impl FromStr for TxSortField {
+    type Err = eyre::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "gas-used" => Ok(Self::GasUsed),
+            "gas-price" => Ok(Self::GasPrice),
+            "value" => Ok(Self::Value),
+            "nonce" => Ok(Self::Nonce),
+            "index" => Ok(Self::Index),
+            _ => Err(eyre::eyre!(
+                "Invalid sort field: {}. Valid options are: gas-used, gas-price, value, nonce, index",
+                s
+            )),
+        }
+    }
+}
+
+impl std::fmt::Display for TxSortField {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::GasUsed => write!(f, "gas-used"),
+            Self::GasPrice => write!(f, "gas-price"),
+            Self::Value => write!(f, "value"),
+            Self::Nonce => write!(f, "nonce"),
+            Self::Index => write!(f, "index"),
+        }
+    }
+}
+
+/// Filter operator for transaction filtering
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilterOp {
+    Eq,
+    Gt,
+    Lt,
+}
+
+/// Filter expression for transactions
+#[derive(Debug, Clone)]
+pub struct TxFilter {
+    pub field: TxFilterField,
+    pub op: FilterOp,
+    pub value: FilterValue,
+}
+
+/// Field that can be filtered
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TxFilterField {
+    GasUsed,
+    GasPrice,
+    Value,
+    Nonce,
+    From,
+    To,
+}
+
+/// Value for filtering
+#[derive(Debug, Clone)]
+pub enum FilterValue {
+    Number(u128),
+    Address(Address),
+}
+
+impl FromStr for TxFilter {
+    type Err = eyre::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        // Parse expressions like "gas>100000" or "to=0x..."
+        let (field_str, op, value_str) = if let Some(pos) = s.find('=') {
+            (&s[..pos], FilterOp::Eq, &s[pos + 1..])
+        } else if let Some(pos) = s.find('>') {
+            (&s[..pos], FilterOp::Gt, &s[pos + 1..])
+        } else if let Some(pos) = s.find('<') {
+            (&s[..pos], FilterOp::Lt, &s[pos + 1..])
+        } else {
+            return Err(eyre::eyre!(
+                "Invalid filter expression: {}. Expected format: field{{=|>|<}}value",
+                s
+            ));
+        };
+
+        let field = match field_str {
+            "gas" | "gas-used" => TxFilterField::GasUsed,
+            "gas-price" => TxFilterField::GasPrice,
+            "value" => TxFilterField::Value,
+            "nonce" => TxFilterField::Nonce,
+            "from" => TxFilterField::From,
+            "to" => TxFilterField::To,
+            _ => return Err(eyre::eyre!("Invalid filter field: {}", field_str)),
+        };
+
+        let value = match field {
+            TxFilterField::From | TxFilterField::To => {
+                FilterValue::Address(Address::from_str(value_str)?)
+            }
+            _ => FilterValue::Number(value_str.parse()?),
+        };
+
+        Ok(TxFilter { field, op, value })
+    }
+}
 
 pub struct TransactionAnalyzer;
 
@@ -25,13 +138,13 @@ impl TransactionAnalyzer {
     /// Sort transactions based on the specified field
     pub fn sort_transactions(
         txs: &mut [AnyRpcTransaction],
-        sort_by: &str,
+        sort_by: TxSortField,
         reverse: bool,
         receipt_gas_used: &HashMap<alloy_primitives::TxHash, u128>,
-    ) -> Result<()> {
+    ) {
         let cmp_fn: Box<dyn Fn(&AnyRpcTransaction, &AnyRpcTransaction) -> Ordering> = match sort_by
         {
-            "gas-used" => Box::new(|a, b| {
+            TxSortField::GasUsed => Box::new(|a, b| {
                 // Use actual gas used from receipts when available
                 let a_gas = receipt_gas_used
                     .get(&a.tx_hash())
@@ -43,22 +156,16 @@ impl TransactionAnalyzer {
                     .unwrap_or_else(|| b.gas_limit() as u128);
                 a_gas.cmp(&b_gas)
             }),
-            "gas-price" => Box::new(|a, b| {
+            TxSortField::GasPrice => Box::new(|a, b| {
                 let a_price = a.effective_gas_price.unwrap_or(0);
                 let b_price = b.effective_gas_price.unwrap_or(0);
                 a_price.cmp(&b_price)
             }),
-            "value" => Box::new(|a, b| a.value().cmp(&b.value())),
-            "nonce" => Box::new(|a, b| a.nonce().cmp(&b.nonce())),
-            "index" => Box::new(|a, b| {
+            TxSortField::Value => Box::new(|a, b| a.value().cmp(&b.value())),
+            TxSortField::Nonce => Box::new(|a, b| a.nonce().cmp(&b.nonce())),
+            TxSortField::Index => Box::new(|a, b| {
                 a.transaction_index.unwrap_or(0).cmp(&b.transaction_index.unwrap_or(0))
             }),
-            _ => {
-                return Err(eyre::eyre!(
-                    "Invalid sort field: {}. Valid options are: gas-used, gas-price, value, nonce, index",
-                    sort_by
-                ));
-            }
         };
 
         if reverse {
@@ -66,93 +173,60 @@ impl TransactionAnalyzer {
         } else {
             txs.sort_by(|a, b| cmp_fn(a, b));
         }
-
-        Ok(())
     }
 
-    /// Filter transactions based on the given expression
+    /// Filter transactions based on the given filter
     pub fn filter_transactions(
         txs: Vec<AnyRpcTransaction>,
-        filter_expr: &str,
-    ) -> Result<Vec<AnyRpcTransaction>> {
-        // Parse filter expression (simple implementation for now)
-        // Supports: gas>100000, to=0x..., from=0x..., value>1000000000000000000
-        let parts: Vec<&str> =
-            filter_expr.splitn(2, |c| c == '>' || c == '<' || c == '=').collect();
-        if parts.len() != 2 {
-            return Err(eyre::eyre!(
-                "Invalid filter expression. Use format: field>value, field<value, or field=value"
-            ));
-        }
-
-        let field = parts[0].trim();
-        let op = if filter_expr.contains('>') {
-            ">"
-        } else if filter_expr.contains('<') {
-            "<"
-        } else {
-            "="
-        };
-        let value = parts[1].trim();
-
-        let filtered = txs
-            .into_iter()
-            .filter(|tx| match field {
-                "gas" => {
-                    if let Ok(gas_value) = value.parse::<u128>() {
-                        match op {
-                            ">" => u128::from(tx.gas_limit()) > gas_value,
-                            "<" => u128::from(tx.gas_limit()) < gas_value,
-                            "=" => u128::from(tx.gas_limit()) == gas_value,
-                            _ => false,
-                        }
-                    } else {
-                        false
+        filter: &TxFilter,
+        receipt_gas_used: &HashMap<alloy_primitives::TxHash, u128>,
+    ) -> Vec<AnyRpcTransaction> {
+        txs.into_iter()
+            .filter(|tx| match (&filter.field, &filter.value) {
+                (TxFilterField::GasUsed, FilterValue::Number(value)) => {
+                    let gas = receipt_gas_used
+                        .get(&tx.tx_hash())
+                        .copied()
+                        .unwrap_or_else(|| tx.gas_limit() as u128);
+                    match filter.op {
+                        FilterOp::Gt => gas > *value,
+                        FilterOp::Lt => gas < *value,
+                        FilterOp::Eq => gas == *value,
                     }
                 }
-                "value" => {
-                    if let Ok(value_wei) = U256::from_str_radix(value, 10) {
-                        match op {
-                            ">" => tx.value() > value_wei,
-                            "<" => tx.value() < value_wei,
-                            "=" => tx.value() == value_wei,
-                            _ => false,
-                        }
-                    } else {
-                        false
+                (TxFilterField::GasPrice, FilterValue::Number(value)) => {
+                    let price = tx.effective_gas_price.unwrap_or(0) as u128;
+                    match filter.op {
+                        FilterOp::Gt => price > *value,
+                        FilterOp::Lt => price < *value,
+                        FilterOp::Eq => price == *value,
                     }
                 }
-                "to" => {
-                    if let Ok(addr) = value.parse::<Address>() {
-                        tx.to().map_or(false, |to| to == addr)
-                    } else {
-                        false
+                (TxFilterField::Value, FilterValue::Number(value)) => {
+                    let tx_value = U256::from(*value);
+                    match filter.op {
+                        FilterOp::Gt => tx.value() > tx_value,
+                        FilterOp::Lt => tx.value() < tx_value,
+                        FilterOp::Eq => tx.value() == tx_value,
                     }
                 }
-                "from" => {
-                    if let Ok(addr) = value.parse::<Address>() {
-                        tx.from() == addr
-                    } else {
-                        false
+                (TxFilterField::Nonce, FilterValue::Number(value)) => {
+                    let nonce = tx.nonce() as u128;
+                    match filter.op {
+                        FilterOp::Gt => nonce > *value,
+                        FilterOp::Lt => nonce < *value,
+                        FilterOp::Eq => nonce == *value,
                     }
                 }
-                "nonce" => {
-                    if let Ok(nonce_value) = value.parse::<u64>() {
-                        match op {
-                            ">" => tx.nonce() > nonce_value,
-                            "<" => tx.nonce() < nonce_value,
-                            "=" => tx.nonce() == nonce_value,
-                            _ => false,
-                        }
-                    } else {
-                        false
-                    }
+                (TxFilterField::From, FilterValue::Address(addr)) => {
+                    matches!(filter.op, FilterOp::Eq) && tx.from() == *addr
+                }
+                (TxFilterField::To, FilterValue::Address(addr)) => {
+                    matches!(filter.op, FilterOp::Eq) && tx.to().map_or(false, |to| to == *addr)
                 }
                 _ => false,
             })
-            .collect();
-
-        Ok(filtered)
+            .collect()
     }
 
     /// Extract transactions from block data
@@ -170,21 +244,21 @@ impl TransactionAnalyzer {
         block: &Block<AnyRpcTransaction, Header<AnyHeader>>,
         mut transactions: Vec<AnyRpcTransaction>,
         receipt_gas_used: HashMap<alloy_primitives::TxHash, u128>,
-        sort_by: Option<String>,
-        filter: Option<String>,
+        sort_by: Option<TxSortField>,
+        filter: Option<TxFilter>,
         limit: Option<usize>,
         reverse: bool,
         no_truncate: bool,
         decode: bool,
     ) -> Result<String> {
         // Apply filter if specified
-        if let Some(filter_expr) = filter.as_ref() {
-            transactions = Self::filter_transactions(transactions, &filter_expr)?;
+        if let Some(filter) = filter.as_ref() {
+            transactions = Self::filter_transactions(transactions, filter, &receipt_gas_used);
         }
 
         // Apply sorting if specified
-        if let Some(sort_field) = sort_by.as_ref() {
-            Self::sort_transactions(&mut transactions, sort_field, reverse, &receipt_gas_used)?;
+        if let Some(sort_field) = sort_by {
+            Self::sort_transactions(&mut transactions, sort_field, reverse, &receipt_gas_used);
         }
 
         // Apply limit if specified
@@ -237,21 +311,14 @@ impl TransactionAnalyzer {
 
         for tx in &transactions {
             let tx_hash = if no_truncate {
-                tx.tx_hash().to_string()
+                format!("{}", tx.tx_hash())
             } else {
-                format!("{}...{}", &tx.tx_hash().to_string()[..8], &tx.tx_hash().to_string()[58..])
+                format!("{:?}", tx.tx_hash())
             };
-            let from = if no_truncate {
-                tx.from().to_string()
-            } else {
-                format!("{}...{}", &tx.from().to_string()[..6], &tx.from().to_string()[38..])
-            };
+            let from =
+                if no_truncate { format!("{}", tx.from()) } else { format!("{:?}", tx.from()) };
             let to = tx.to().map_or(String::from("Contract Creation"), |addr| {
-                if no_truncate {
-                    addr.to_string()
-                } else {
-                    format!("{}...{}", &addr.to_string()[..6], &addr.to_string()[38..])
-                }
+                if no_truncate { format!("{}", addr) } else { format!("{:?}", addr) }
             });
 
             // Format value in ETH
